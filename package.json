@@ -1,0 +1,8 @@
+{
+  "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "^2.3.0"
+  },
+  "dependencies": {
+    "idb": "^8.0.4"
+  }
+}
