@@ -1,58 +1,115 @@
-import { use, useState } from 'react'
-import { newSalt, decryptText, deriveKey, encryptText } from './crypto'
-
-// One salt for this test session. (Later it gets saved with the user's account)
-const salt = newSalt();
+// npm run dev -- --host
+import { useState, useEffect } from 'react'
+import { newSalt, deriveKey, decryptText, encryptText } from './crypto'
+import { getMeta, setMeta, saveNote, getAllNotes } from './db';
 
 function App() {
+  const [key, setKey] = useState(null);
   const [password, setPassword] = useState("");
-  const [note, setNote] = useState("My secret note");
-  const [encrypted, setEncrypted] = useState(null);
-  const [result, setResult] = useState("");
+  const [isNewUser, setIsNewUser] = useState(false);
+  const [notes, setNotes] = useState([]);
+  const [draft, setDraft] = useState("");
+  const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function handleEncrypt() {
+  useEffect(() => {
+    getMeta("salt").then((salt) => setIsNewUser(!salt));
+  }, []);
+
+  async function handleUnlock() {
     setBusy(true);
-    const start = performance.now();
-    const key = await deriveKey(password, salt);
-    const time = Math.round(performance.now() - start);
-    setEncrypted(await encryptText(key, note));
-    setResult(`Encrypted. Deriving the key took ${time} ms.`);
-    setBusy(false);
+    setMessage("");
+    try {
+      // Get the salt or create one for a new user
+      let salt = await getMeta("salt");
+      if (!salt) {
+        salt = newSalt();
+        await setMeta("salt", salt);
+      }
+
+      // Derive the key
+      const k = await deriveKey(password, salt);
+
+      // Check the password with the verifier
+      const verifier = await getMeta("verifier");
+      if (!verifier) {
+        await setMeta("verifier", await encryptText(k, "ok"));
+      } else {
+        try {
+          await decryptText(k, verifier);
+        } catch {
+          setMessage("Wrong password.");
+          return;
+        }
+      }
+
+      // Load and decrypt all notes
+      const stored = await getAllNotes();
+      const decryted = await Promise.all(
+        stored.map(async (n) => ({
+          id: n.id, 
+          updatedAt: n.updatedAt, 
+          text: await decryptText(k, n) 
+        }))
+      );
+
+      // Unlock
+      setIsNewUser(false)
+      setNotes(decryted);
+      setKey(k);
+      setPassword("");
+    } finally {
+      setBusy(false)
+    }
   }
 
-  async function handleDecrypt() {
-    setBusy(true);
-    try {
-      const key = await deriveKey(password, salt);
-      setResult("Decrypted: " + (await decryptText(key, encrypted)));
-    } catch {
-      setResult("Could not decrypt. Wrong password?")
-    }
-    setBusy(false);
+  async function handleSave() {
+    const enc = await encryptText(key, draft);
+    const note = { 
+      id: crypto.randomUUID(), 
+      updatedAt: Date.now(), 
+      ...enc 
+    };
+    await saveNote(note);
+    setNotes([...notes, { 
+      id: note.id, 
+      updatedAt: note.updatedAt, 
+      text: draft 
+    }]);
+    setDraft("");
   }
   
+  function handleLock() {
+    setNotes([]);
+    setKey(null);
+  }
+
+  // Locked screen
+  if (!key) {
+    return (
+      <main style={{ maxWidth: 600, margin: "40px auto", fontFamily: "sans-serif "}}>
+        <h1>{isNewUser ? "Create a password" : "Unlock your notes"}</h1>
+        <input type='password' value={password} onChange={(e) => setPassword(e.target.value)} />{" "}
+        <button onClick={handleUnlock} disabled={busy || !password}>
+          {isNewUser ? "Create" : "Unlock"}
+        </button>
+        <p>{busy ? "Working..." : message}</p>
+      </main>
+    );
+  }
+  
+  // Unlock screen
   return (
     <main style={{ maxWidth: 600, margin: "40px auto", fontFamily: "sans-serif "}}>
-      <h1>Encryption spike</h1>
-
-      <label>Password</label>
-      <input type='password' value={password} onChange={(e) => setPassword(e.target.value)}
-        style={{ display: 'block', width: '100%', marginBottom: 12 }}/>
-
-      <label>Note</label>
-      <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={4} 
-        style={{ display: 'block', width: '100%', marginBottom: 12}}/>
-
-      <button onClick={handleEncrypt} disabled={busy || !password}>Encrypt</button>{" "}
-      <button onClick={handleDecrypt} disabled={busy || !encrypted}>Decrypt</button>
-
-      {encrypted && (
-        <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', background: '#eee', padding: 12}}>
-          {JSON.stringify(encrypted, null, 2)}
-        </pre>
-      )}
-      <p>{busy ? "Working..." : result}</p>
+      <h1>My notes</h1>
+      <button onClick={handleLock}>Lock</button>
+      <ul>
+        {notes.map((n) => (
+          <li key={n.id}>{n.text}</li>
+        ))}
+      </ul>
+      <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={3} style={{ width: "100%"}} />
+      <button onClick={handleSave} disabled={!draft.trim()}>Save note</button>
     </main>
   );
 }
